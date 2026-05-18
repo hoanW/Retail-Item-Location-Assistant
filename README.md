@@ -1,6 +1,6 @@
 # Retail Item Location Assistant
 
-Lightweight FastAPI + SQLite web app for remembering approximate clothing item locations on a store floor.
+Lightweight FastAPI web app for remembering approximate clothing item locations on a store floor.
 
 ## Features
 
@@ -9,7 +9,16 @@ Lightweight FastAPI + SQLite web app for remembering approximate clothing item l
 - Single **Not There** button to mark failed searches
 - Assign/update location flow for new and existing items
 - Outdated/suspect items view
-- SQLite persistence
+- SQLite persistence for local development
+- PostgreSQL support for deployment persistence
+
+## Database configuration
+
+Local development uses SQLite by default. Deployment/production should use a managed PostgreSQL database configured by environment variable so data survives redeployments. Do not rely on a local SQLite file in production hosting environments.
+
+- Local SQLite default: `retail_locations.db` in the project root
+- Local SQLite override: `RETAIL_DB_PATH=/path/to/file.db`
+- Production PostgreSQL: set `DATABASE_URL=postgresql://...` (or `POSTGRES_URL=postgresql://...`)
 
 ## Run locally
 
@@ -26,6 +35,16 @@ By default the database is `retail_locations.db` in the project root. Override w
 
 ```bash
 RETAIL_DB_PATH=/path/to/file.db uvicorn retail_location_app.main:app --reload
+```
+
+## Deploy
+
+Set `DATABASE_URL` to a persistent PostgreSQL database supplied by your host. The app initializes the required table/indexes on startup.
+
+Example:
+
+```bash
+DATABASE_URL=postgresql://user:password@host:5432/dbname uvicorn retail_location_app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ## API
@@ -59,7 +78,7 @@ Phone notes:
 
 ## Data retention
 
-Items now use soft lifecycle cleanup instead of hard deletion. New fields are stored in SQLite:
+Items now use soft lifecycle cleanup instead of hard deletion. New fields are stored in the configured database:
 
 - `last_seen_at`
 - `archived_at`

@@ -3,6 +3,8 @@ from pathlib import Path
 
 
 def setup_db(tmp_path: Path):
+    os.environ.pop("DATABASE_URL", None)
+    os.environ.pop("POSTGRES_URL", None)
     os.environ["RETAIL_DB_PATH"] = str(tmp_path / "test.db")
     from retail_location_app.database import get_connection, init_db
 

@@ -118,7 +118,13 @@ Rules:
 
 Use Python backend with FastAPI.
 
-### 5.1 Database (SQLite for MVP)
+### 5.1 Database
+
+- Local development: use SQLite.
+- Deployment/production: use PostgreSQL configured via environment variables (for example, a `DATABASE_URL`).
+- Production database persistence must survive redeployments.
+- Never rely on local SQLite file persistence in production hosting environments.
+
 
 Table: items
 
@@ -152,3 +158,4 @@ Request:
   "article_number": "123456",
   "location": "B2"
 }
+```

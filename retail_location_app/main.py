@@ -5,16 +5,15 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-import sqlite3
 
-from .database import get_connection, init_db
+from .database import false_value, get_backend, get_connection, init_db, param_sql, true_value
 
 SUSPECT_THRESHOLD = 1
 STALE_THRESHOLD = 3
@@ -121,7 +120,7 @@ def derive_status(failure_count: int) -> ItemStatus:
     return "valid"
 
 
-def derive_lifecycle(row: sqlite3.Row | dict) -> LifecycleState:
+def derive_lifecycle(row: dict[str, Any] | Any) -> LifecycleState:
     is_archived = bool(row["is_archived"])
     if is_archived:
         return "archived"
@@ -131,18 +130,25 @@ def derive_lifecycle(row: sqlite3.Row | dict) -> LifecycleState:
     return "active"
 
 
-def apply_archive_policy(conn: sqlite3.Connection) -> int:
+def apply_archive_policy(conn) -> int:
     """Soft-archive records that have not been updated within the retention window."""
     cutoff = now_dt() - timedelta(days=ARCHIVE_AFTER_DAYS)
     timestamp = now_iso()
-    cur = conn.execute(
-        """
+    if get_backend() == "postgres":
+        sql = """
         UPDATE items
-        SET is_archived = 1, archived_at = COALESCE(archived_at, ?)
-        WHERE is_archived = 0 AND datetime(last_updated) < datetime(?)
-        """,
-        (timestamp, cutoff.isoformat()),
-    )
+        SET is_archived = %s, archived_at = COALESCE(archived_at, %s)
+        WHERE is_archived = %s AND last_updated::timestamptz < %s::timestamptz
+        """
+        params = (true_value(), timestamp, false_value(), cutoff.isoformat())
+    else:
+        sql = """
+        UPDATE items
+        SET is_archived = ?, archived_at = COALESCE(archived_at, ?)
+        WHERE is_archived = ? AND datetime(last_updated) < datetime(?)
+        """
+        params = (true_value(), timestamp, false_value(), cutoff.isoformat())
+    cur = conn.execute(sql, params)
     conn.commit()
     return cur.rowcount
 
@@ -155,14 +161,14 @@ def normalize_location(location: str) -> str:
     return location.strip().upper()
 
 
-def row_to_item(row: sqlite3.Row) -> ItemOut:
+def row_to_item(row) -> ItemOut:
     data = dict(row)
     data["is_archived"] = bool(data.get("is_archived"))
     data["lifecycle_state"] = derive_lifecycle(data)
     return ItemOut(**data)
 
 
-def db() -> sqlite3.Connection:
+def db():
     conn = get_connection()
     try:
         apply_archive_policy(conn)
@@ -177,9 +183,10 @@ def index() -> FileResponse:
 
 
 @app.get("/health")
-def health(conn: sqlite3.Connection = Depends(db)) -> dict[str, int | str]:
+def health(conn=Depends(db)) -> dict[str, int | str]:
     return {
         "status": "ok",
+        "database_backend": get_backend(),
         "archive_after_days": ARCHIVE_AFTER_DAYS,
         "aging_after_days": AGING_AFTER_DAYS,
         "archive_check_seconds": ARCHIVE_CHECK_SECONDS,
@@ -187,26 +194,26 @@ def health(conn: sqlite3.Connection = Depends(db)) -> dict[str, int | str]:
 
 
 @app.post("/maintenance/archive")
-def run_archive_maintenance(conn: sqlite3.Connection = Depends(db)) -> dict[str, int | str]:
+def run_archive_maintenance(conn=Depends(db)) -> dict[str, int | str]:
     archived_count = apply_archive_policy(conn)
     return {"status": "ok", "archived_count": archived_count, "archive_after_days": ARCHIVE_AFTER_DAYS}
 
 
 @app.get("/items/{article_number}", response_model=ItemOut)
-def get_item(article_number: str, conn: sqlite3.Connection = Depends(db)) -> ItemOut:
+def get_item(article_number: str, conn=Depends(db)) -> ItemOut:
     article = normalize_article(article_number)
-    row = conn.execute("SELECT * FROM items WHERE article_number = ?", (article,)).fetchone()
+    row = conn.execute(param_sql("SELECT * FROM items WHERE article_number = ?"), (article,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    conn.execute("UPDATE items SET last_seen_at = ? WHERE article_number = ?", (now_iso(), article))
+    conn.execute(param_sql("UPDATE items SET last_seen_at = ? WHERE article_number = ?"), (now_iso(), article))
     conn.commit()
-    row = conn.execute("SELECT * FROM items WHERE article_number = ?", (article,)).fetchone()
+    row = conn.execute(param_sql("SELECT * FROM items WHERE article_number = ?"), (article,)).fetchone()
     return row_to_item(row)
 
 
 @app.post("/items/assign", response_model=ItemOut)
-def assign_item(payload: AssignRequest, conn: sqlite3.Connection = Depends(db)) -> ItemOut:
+def assign_item(payload: AssignRequest, conn=Depends(db)) -> ItemOut:
     article = normalize_article(payload.article_number)
     location = normalize_location(payload.location)
     if not article:
@@ -215,37 +222,41 @@ def assign_item(payload: AssignRequest, conn: sqlite3.Connection = Depends(db)) 
         raise HTTPException(status_code=422, detail="location cannot be blank")
 
     timestamp = now_iso()
-    existing = conn.execute("SELECT id FROM items WHERE article_number = ?", (article,)).fetchone()
+    existing = conn.execute(param_sql("SELECT id FROM items WHERE article_number = ?"), (article,)).fetchone()
     if existing:
         conn.execute(
-            """
-            UPDATE items
-            SET current_location = ?, status = 'valid', failure_count = 0,
-                last_updated = ?, last_seen_at = ?, is_archived = 0, archived_at = NULL
-            WHERE article_number = ?
-            """,
-            (location, timestamp, timestamp, article),
+            param_sql(
+                """
+                UPDATE items
+                SET current_location = ?, status = 'valid', failure_count = 0,
+                    last_updated = ?, last_seen_at = ?, is_archived = ?, archived_at = NULL
+                WHERE article_number = ?
+                """
+            ),
+            (location, timestamp, timestamp, false_value(), article),
         )
     else:
         conn.execute(
-            """
-            INSERT INTO items (
-                article_number, current_location, status, failure_count,
-                last_updated, last_seen_at, archived_at, is_archived, created_at
-            )
-            VALUES (?, ?, 'valid', 0, ?, ?, NULL, 0, ?)
-            """,
-            (article, location, timestamp, timestamp, timestamp),
+            param_sql(
+                """
+                INSERT INTO items (
+                    article_number, current_location, status, failure_count,
+                    last_updated, last_seen_at, archived_at, is_archived, created_at
+                )
+                VALUES (?, ?, 'valid', 0, ?, ?, NULL, ?, ?)
+                """
+            ),
+            (article, location, timestamp, timestamp, false_value(), timestamp),
         )
     conn.commit()
-    row = conn.execute("SELECT * FROM items WHERE article_number = ?", (article,)).fetchone()
+    row = conn.execute(param_sql("SELECT * FROM items WHERE article_number = ?"), (article,)).fetchone()
     return row_to_item(row)
 
 
 @app.post("/items/{article_number}/not-there", response_model=NotThereResponse)
-def mark_not_there(article_number: str, conn: sqlite3.Connection = Depends(db)) -> NotThereResponse:
+def mark_not_there(article_number: str, conn=Depends(db)) -> NotThereResponse:
     article = normalize_article(article_number)
-    row = conn.execute("SELECT * FROM items WHERE article_number = ?", (article,)).fetchone()
+    row = conn.execute(param_sql("SELECT * FROM items WHERE article_number = ?"), (article,)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Item not found")
 
@@ -253,16 +264,18 @@ def mark_not_there(article_number: str, conn: sqlite3.Connection = Depends(db)) 
     status = derive_status(failure_count)
     timestamp = now_iso()
     conn.execute(
-        """
-        UPDATE items
-        SET failure_count = ?, status = ?, last_updated = ?, last_seen_at = ?,
-            is_archived = 0, archived_at = NULL
-        WHERE article_number = ?
-        """,
-        (failure_count, status, timestamp, timestamp, article),
+        param_sql(
+            """
+            UPDATE items
+            SET failure_count = ?, status = ?, last_updated = ?, last_seen_at = ?,
+                is_archived = ?, archived_at = NULL
+            WHERE article_number = ?
+            """
+        ),
+        (failure_count, status, timestamp, timestamp, false_value(), article),
     )
     conn.commit()
-    updated = conn.execute("SELECT * FROM items WHERE article_number = ?", (article,)).fetchone()
+    updated = conn.execute(param_sql("SELECT * FROM items WHERE article_number = ?"), (article,)).fetchone()
     item = row_to_item(updated)
     return NotThereResponse(**item.dict())
 
@@ -271,18 +284,20 @@ def mark_not_there(article_number: str, conn: sqlite3.Connection = Depends(db)) 
 def list_items(
     unreliable: bool = Query(False, description="Return only suspect/stale or over-threshold items."),
     include_archived: bool = Query(False, description="Include soft-archived records in list results."),
-    conn: sqlite3.Connection = Depends(db),
+    conn=Depends(db),
 ) -> list[ItemOut]:
     unreliable = unreliable if isinstance(unreliable, bool) else False
     include_archived = include_archived if isinstance(include_archived, bool) else False
-    archive_filter = "" if include_archived else "AND is_archived = 0"
+    archive_filter = "" if include_archived else f"AND is_archived = {'FALSE' if get_backend() == 'postgres' else 0}"
     if unreliable:
         rows = conn.execute(
-            f"""
-            SELECT * FROM items
-            WHERE (failure_count >= ? OR status IN ('suspect', 'stale')) {archive_filter}
-            ORDER BY failure_count DESC, last_updated ASC
-            """,
+            param_sql(
+                f"""
+                SELECT * FROM items
+                WHERE (failure_count >= ? OR status IN ('suspect', 'stale')) {archive_filter}
+                ORDER BY failure_count DESC, last_updated ASC
+                """
+            ),
             (SUSPECT_THRESHOLD,),
         ).fetchall()
     else:
