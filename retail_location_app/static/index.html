@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Retail Item Location Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Item Location Assistant</h1>
+    <p>Approximate floor locations for fitting-room returns.</p>
+  </header>
+
+  <main>
+    <section class="card primary">
+      <h2>Find Item</h2>
+      <form id="find-form" class="row">
+        <input id="find-article" autocomplete="off" inputmode="numeric" placeholder="Scan or enter article number" autofocus />
+        <button>Find</button>
+      </form>
+      <button id="scan-find" class="scan-button" type="button">📷 Scan Barcode with Camera</button>
+      <div id="find-result" class="result muted">Scan an item to see its area.</div>
+    </section>
+
+    <section class="card">
+      <h2>Assign / Update Location</h2>
+      <p class="hint">Choose the current area, then scan each item. Existing records are overwritten and reset to valid.</p>
+      <div class="row">
+        <label class="area-label">Area
+          <input id="assign-location" value="A" maxlength="20" />
+        </label>
+      </div>
+      <form id="assign-form" class="row">
+        <input id="assign-article" autocomplete="off" inputmode="numeric" placeholder="Scan article number" />
+        <button>Assign</button>
+      </form>
+      <button id="scan-assign" class="scan-button" type="button">📷 Scan Barcode with Camera</button>
+      <div id="assign-result" class="result muted">No item assigned yet.</div>
+    </section>
+
+    <section class="card wide">
+      <div class="section-title">
+        <h2>Outdated / Suspect Items</h2>
+        <label class="checkbox-label"><input id="include-archived" type="checkbox" /> Include archived</label>
+        <button id="refresh-outdated" type="button">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Article</th>
+              <th>Last Known</th>
+              <th>Status</th>
+              <th>Lifecycle</th>
+              <th>Failures</th>
+              <th>Last Updated</th>
+            </tr>
+          </thead>
+          <tbody id="outdated-body">
+            <tr><td colspan="6" class="muted">No data loaded.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="scanner-modal" class="scanner-modal" hidden>
+    <div class="scanner-panel" role="dialog" aria-modal="true" aria-labelledby="scanner-title">
+      <div class="section-title">
+        <h2 id="scanner-title">Scan Barcode</h2>
+        <button id="scanner-close" class="secondary" type="button">Close</button>
+      </div>
+      <p id="scanner-help" class="hint">Point your phone camera at the barcode. Scanning works best on HTTPS or localhost.</p>
+      <div class="video-frame">
+        <video id="scanner-video" muted playsinline></video>
+        <div class="scan-line"></div>
+      </div>
+      <div id="scanner-status" class="result muted">Starting camera…</div>
+    </div>
+  </div>
+
+  <template id="item-card-template">
+    <div class="item-card">
+      <div class="location"></div>
+      <dl>
+        <div><dt>Article</dt><dd class="article"></dd></div>
+        <div><dt>Status</dt><dd class="status"></dd></div>
+        <div><dt>Lifecycle</dt><dd class="lifecycle"></dd></div>
+        <div><dt>Failures</dt><dd class="failures"></dd></div>
+        <div><dt>Updated</dt><dd class="updated"></dd></div>
+      </dl>
+      <button class="danger not-there" type="button">Not There</button>
+    </div>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
